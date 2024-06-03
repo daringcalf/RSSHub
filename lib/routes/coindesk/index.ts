@@ -1,12 +1,16 @@
 import { Route } from '@/types';
-import got from '@/utils/got';
+import parser from '@/utils/rss-parser';
 import { load } from 'cheerio';
-const rootUrl = 'https://www.coindesk.com';
+import cache from '@/utils/cache';
+import ofetch from '@/utils/ofetch';
+
+const baseUrl = 'https://www.coindesk.com';
+const feedUrl = `${baseUrl}/feed`;
 
 export const route: Route = {
-    path: '/consensus-magazine',
+    path: '/',
     categories: ['new-media'],
-    example: '/coindesk/consensus-magazine',
+    example: '/coindesk',
     parameters: {},
     features: {
         requireConfig: false,
@@ -16,44 +20,34 @@ export const route: Route = {
         supportPodcast: false,
         supportScihub: false,
     },
-    radar: [
-        {
-            source: ['coindesk.com/'],
-        },
-    ],
-    name: '新闻周刊',
-    maintainers: ['jameshih'],
+    name: 'coindesk',
+    maintainers: ['Daring Cλlf'],
     handler,
-    url: 'coindesk.com/',
 };
 
-async function handler(ctx) {
-    const channel = ctx.req.param('channel') ?? 'consensus-magazine';
+async function handler() {
+    const feed = await parser.parseURL(feedUrl);
 
-    const response = await got.get(`${rootUrl}/${channel}/`);
-    const $ = load(response.data);
-    const content = JSON.parse(
-        $('#fusion-metadata')
-            .text()
-            .match(/Fusion\.contentCache=(.*?);Fusion\.layout/)[1]
+    const items = await Promise.all(
+        feed.items.map((item) =>
+            cache.tryGet(item.link, async () => {
+                const response = await ofetch(item.link);
+                const $ = load(response);
+
+                item.description = $('.main-body-grid p')
+                    .toArray()
+                    .map((el) => $(el).text())
+                    .join('\n')
+                    .trim();
+
+                return item;
+            })
+        )
     );
 
-    const o1 = content['websked-collections'];
-    // Object key names are different every week
-    const articles = o1[Object.keys(o1)[2]];
-
-    const list = articles.data;
-
-    const items = list.map((item) => ({
-        title: item.headlines.basic,
-        link: rootUrl + item.canonical_url,
-        description: item.subheadlines.basic,
-        pubDate: item.display_date,
-    }));
-
     return {
-        title: 'CoinDesk Consensus Magazine',
-        link: `${rootUrl}/${channel}`,
+        title: 'CoinDesk',
+        link: baseUrl,
         item: items,
     };
 }

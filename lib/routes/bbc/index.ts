@@ -3,7 +3,8 @@ import cache from '@/utils/cache';
 import parser from '@/utils/rss-parser';
 import { load } from 'cheerio';
 import utils from './utils';
-import ofetch from '@/utils/ofetch';
+import logger from '@/utils/logger';
+import puppeteer from '@/utils/puppeteer';
 
 export const route: Route = {
     path: '/:site?/:channel?',
@@ -58,15 +59,28 @@ async function handler(ctx) {
         link = 'https://www.bbc.co.uk/news';
     }
 
-    const items = await Promise.all(
+    const browser = await puppeteer();
+
+    let items = await Promise.all(
         feed.items.map((item) =>
             cache.tryGet(item.link, async () => {
+                const page = await browser.newPage();
+                await page.setRequestInterception(true);
+                page.on('request', (request) => {
+                    request.resourceType() === 'document' ? request.continue() : request.abort();
+                });
+
                 const linkURL = new URL(item.link);
                 if (linkURL.hostname === 'www.bbc.com') {
                     linkURL.hostname = 'www.bbc.co.uk';
                 }
 
-                const response = await ofetch(linkURL.href);
+                logger.http(`Requesting ${linkURL.href}`);
+                await page.goto(linkURL.href, {
+                    waitUntil: 'domcontentloaded',
+                });
+                const response = await page.content();
+                page.close();
 
                 const $ = load(response);
 
@@ -97,6 +111,10 @@ async function handler(ctx) {
             })
         )
     );
+
+    items = items.filter((item) => item.description);
+
+    browser.close();
 
     return {
         title,

@@ -29,7 +29,13 @@ const ProcessFeed = ($) => {
 
     content.find('[data-component="media-block"] figcaption').prepend('<span>View video in browser: </span>');
 
-    return content.html();
+    const paragraphs = content
+        .find('div[data-component="text-block"] p')
+        .map((_, el) => $(el).html())
+        .get()
+        .join(' ');
+
+    return paragraphs;
 };
 
 export default { ProcessFeed };

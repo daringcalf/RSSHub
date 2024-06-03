@@ -1,13 +1,11 @@
 import { Route } from '@/types';
-import { getCurrentPath } from '@/utils/helpers';
-const __dirname = getCurrentPath(import.meta.url);
 
 import cache from '@/utils/cache';
 import ofetch from '@/utils/ofetch';
 import { load } from 'cheerio';
 import { parseDate } from '@/utils/parse-date';
-import { art } from '@/utils/render';
-import path from 'node:path';
+import logger from '@/utils/logger';
+import puppeteer from '@/utils/puppeteer';
 
 export const route: Route = {
     path: '/:category/:topic?',
@@ -134,61 +132,37 @@ async function handler(ctx) {
 
     items = items.filter((e, i) => items.findIndex((f) => e.guid === f.guid) === i);
 
-    const results = await Promise.allSettled(
+    const browser = await puppeteer();
+
+    items = await Promise.all(
         items.map((item) =>
-            ctx.req.query('mode') === 'fulltext'
-                ? cache.tryGet(item.link, async () => {
-                      const detailResponse = await ofetch(item.link);
-                      const content = load(detailResponse.data);
+            cache.tryGet(item.link, async () => {
+                const page = await browser.newPage();
+                await page.setRequestInterception(true);
+                page.on('request', (request) => {
+                    request.resourceType() === 'document' ? request.continue() : request.abort();
+                });
+                logger.http(`Requesting ${item.link}`);
+                await page.goto(item.link, {
+                    waitUntil: 'domcontentloaded',
+                });
+                const response = await page.content();
+                page.close();
+                const $ = load(response);
 
-                      if (detailResponse.url.startsWith('https://www.reuters.com/investigates/')) {
-                          const ldJson = JSON.parse(content('script[type="application/ld+json"]').text());
-                          content('.special-report-article-container .container, #slide-dek, #slide-end, .share-in-article-container').remove();
+                const paragraphs = $('div[data-testid^="paragraph-"]');
 
-                          item.title = ldJson.headline;
-                          item.pubDate = parseDate(ldJson.dateCreated);
-                          item.author = ldJson.creator;
-                          item.category = ldJson.keywords;
-                          item.description = content('.special-report-article-container').html();
+                item.description = paragraphs
+                    .map((_, el) => $(el).html())
+                    .get()
+                    .join(' ');
 
-                          return item;
-                      }
-
-                      const matches = content('script#fusion-metadata')
-                          .text()
-                          .match(/Fusion.globalContent=({[\S\s]*?});/);
-
-                      if (matches) {
-                          const data = JSON.parse(matches[1]);
-
-                          item.title = data.result.title || item.title;
-                          item.description = art(path.join(__dirname, 'templates/description.art'), {
-                              result: data.result,
-                          });
-                          item.pubDate = parseDate(data.result.display_time);
-                          item.author = data.result.authors.map((author) => author.name).join(', ');
-                          item.category = data.result.taxonomy.keywords;
-
-                          return item;
-                      }
-
-                      content('.title').remove();
-                      content('.article-metadata').remove();
-
-                      item.title = content('meta[property="og:title"]').attr('content');
-                      item.pubDate = parseDate(detailResponse.data.match(/"datePublished":"(.*?)","dateModified/)[1]);
-                      item.author = detailResponse.data
-                          .match(/{"@type":"Person","name":"(.*?)"}/g)
-                          .map((p) => p.match(/"name":"(.*?)"/)[1])
-                          .join(', ');
-                      item.description = content('article').html();
-
-                      return item;
-                  })
-                : item
+                return item;
+            })
         )
     );
-    items = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+
+    browser.close();
 
     return {
         title,

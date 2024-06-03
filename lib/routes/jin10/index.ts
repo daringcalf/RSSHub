@@ -1,88 +1,61 @@
 import { Route } from '@/types';
-import { getCurrentPath } from '@/utils/helpers';
-const __dirname = getCurrentPath(import.meta.url);
-
+import { load } from 'cheerio';
+import ofetch from '@/utils/ofetch';
 import cache from '@/utils/cache';
-import got from '@/utils/got';
-import { parseDate } from '@/utils/parse-date';
-import timezone from '@/utils/timezone';
-import { art } from '@/utils/render';
-import path from 'node:path';
-import { config } from '@/config';
+import { parseRelativeDate } from '@/utils/parse-date';
+
+const baseUrl = 'https://xnews.jin10.com';
 
 export const route: Route = {
-    path: '/:important?',
-    categories: ['finance'],
+    path: '/',
+    categories: ['other'],
     example: '/jin10',
-    parameters: { important: '只看重要，任意值开启，留空关闭' },
-    features: {
-        requireConfig: false,
-        requirePuppeteer: false,
-        antiCrawler: false,
-        supportBT: false,
-        supportPodcast: false,
-        supportScihub: false,
-    },
-    radar: [
-        {
-            source: ['jin10.com/'],
-            target: '',
-        },
-    ],
-    name: '市场快讯',
-    maintainers: ['laampui'],
+    name: 'jin10 toutiao',
+    maintainers: ['Daring Cλlf'],
     handler,
-    url: 'jin10.com/',
+    url: baseUrl,
 };
 
-async function handler(ctx) {
-    const { important = false } = ctx.req.param();
-    const data = await cache.tryGet(
-        'jin10:index',
-        async () => {
-            const { data: response } = await got('https://flash-api.jin10.com/get_flash_list', {
-                headers: {
-                    'x-app-id': 'bVBF4FyRTn5NJF5n',
-                    'x-version': '1.0.0',
-                },
-                searchParams: {
-                    channel: '-8200',
-                    vip: '1',
-                },
-            });
-            return response.data.filter((item) => item.type !== 1);
-        },
-        config.cache.routeExpire,
-        false
+async function handler() {
+    const response = await ofetch(baseUrl);
+    const $ = load(response);
+
+    let list = $('div.jin10-news-list div.jin10-news-list-item')
+        .toArray()
+        .map((item) => {
+            const $item = $(item);
+            const $a = $item.find('div.jin10-news-list-item-info a').first();
+            return {
+                title: $a.find('p.jin10-news-list-item-title').text().trim(),
+                link: $a.attr('href'),
+                pubDate: parseRelativeDate($item.find('span.jin10-news-list-item-display_datetime').text().trim()),
+            };
+        });
+
+    list = list.filter((item) => item.link && item.link.startsWith(baseUrl));
+
+    let items = await Promise.all(
+        list.map((item) =>
+            cache.tryGet(item.link, async () => {
+                const response = await ofetch(item.link);
+                const $ = load(response);
+
+                item.description = $('.jin10vip-image-viewer *[style="text-align: justify;"]')
+                    .toArray()
+                    .map((el) => $(el).text())
+                    .join('\n')
+                    .trim();
+
+                return item;
+            })
+        )
     );
 
-    const item = data.map((item) => {
-        const titleMatch = item.data.content.match(/^【(.*?)】/);
-        let title;
-        let content = item.data.content;
-        if (titleMatch) {
-            title = titleMatch[1];
-            content = content.replace(titleMatch[0], '');
-        } else {
-            title = item.data.vip_title || item.data.content;
-        }
-
-        return {
-            title,
-            description: art(path.join(__dirname, 'templates/description.art'), {
-                content,
-                pic: item.data.pic,
-            }),
-            pubDate: timezone(parseDate(item.time), 8),
-            link: item.data.link,
-            guid: `jin10:index:${item.id}`,
-            important: item.important,
-        };
-    });
+    items = items.filter((item) => item && item.description && item.pubDate instanceof Date && !Number.isNaN(item.pubDate.getTime()));
 
     return {
-        title: '金十数据',
-        link: 'https://www.jin10.com/',
-        item: important ? item.filter((item) => item.important) : item,
+        title: 'jin10',
+        link: baseUrl,
+        item: items,
     };
 }
